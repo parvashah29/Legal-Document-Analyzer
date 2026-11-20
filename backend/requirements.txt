@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-multipart
+langchain
+langchain-groq
+langchain-community
+langchain-text-splitters
+qdrant-client
+fastembed
+pypdf
+python-docx
+pydantic>=2.9.0
+python-dotenv
+reportlab
