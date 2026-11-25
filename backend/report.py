@@ -4,6 +4,14 @@ Generates branded, downloadable PDF risk analysis reports using reportlab.
 """
 import io
 from datetime import datetime
+from xml.sax.saxutils import escape as _esc
+
+import config
+
+
+def _e(v) -> str:
+    return _esc(str(v if v is not None else ''))
+
 
 def build_pdf_report(risk_data: dict) -> bytes:
     """
@@ -119,9 +127,10 @@ def build_pdf_report(risk_data: dict) -> bytes:
     doc_id = risk_data.get('doc_id', 'Unknown')
     
     # ---- HEADER ----
-    elements.append(Paragraph("🛡️ Legal Risk Analysis Report", title_style))
+    elements.append(Paragraph("Legal Risk Analysis Report", title_style))
     elements.append(Paragraph(
-        f"Generated: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}  •  Document ID: {doc_id[:12]}...",
+        f"File: {_e(risk_data.get('filename') or 'unknown')}  |  Generated: {datetime.now().strftime('%B %d, %Y %I:%M %p')}  |  "
+        f"Document ID: {_e(doc_id[:12])}  |  Analysis: {_e(risk_data.get('engine', 'rules'))}",
         subtitle_style
     ))
     elements.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor('#e5e7eb')))
@@ -131,13 +140,13 @@ def build_pdf_report(risk_data: dict) -> bytes:
     elements.append(Paragraph("Risk Summary", section_style))
     
     overall = summary.get('overall_score', 0)
-    risk_label = "LOW" if overall < 30 else "MODERATE" if overall < 60 else "HIGH" if overall < 80 else "CRITICAL"
+    risk_label = summary.get('overall_label') or ('LOW' if overall < 25 else 'MODERATE' if overall < 50 else 'HIGH' if overall < 75 else 'CRITICAL')
     
     summary_data = [
         ['Category', 'Count', 'Overall Risk Score'],
-        [f'🔴 High Risk', str(summary.get('high', 0)), ''],
-        [f'🟡 Medium Risk', str(summary.get('medium', 0)), f'{overall}/100'],
-        [f'🟢 Low Risk', str(summary.get('low', 0)), f'({risk_label})'],
+        ['High Risk', str(summary.get('high', 0)), f'{overall}/100 ({risk_label})'],
+        ['Medium Risk', str(summary.get('medium', 0)), ''],
+        ['Low Risk', str(summary.get('low', 0)), ''],
     ]
     
     summary_table = Table(summary_data, colWidths=[2.5*inch, 1.5*inch, 2.5*inch])
@@ -151,7 +160,7 @@ def build_pdf_report(risk_data: dict) -> bytes:
         ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#d1d5db')),
         ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f9fafb')),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.HexColor('#f9fafb'), colors.white]),
-        ('SPAN', (2, 1), (2, 2)),
+        ('SPAN', (2, 1), (2, 3)),
         ('FONTSIZE', (0, 1), (-1, -1), 10),
         ('TOPPADDING', (0, 0), (-1, -1), 8),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
@@ -179,41 +188,41 @@ def build_pdf_report(risk_data: dict) -> bytes:
             clause_elements = []
             
             # Clause header
-            header_text = f"<b>{idx}. {flag.get('clause_type', 'Unknown')}</b>  —  " \
-                         f"<font color='{color.hexval()}'>{risk_level.upper()} RISK</font>  " \
+            header_text = f"<b>{idx}. {_e(flag.get('clause_type', 'Unknown'))}</b>  —  " \
+                         f"<font color='{color.hexval()}'>{_e(risk_level.upper())} RISK</font>  " \
                          f"(Severity: {severity}/10)"
             clause_elements.append(Paragraph(header_text, body_style))
             
             # Plain English
             clause_elements.append(Paragraph(
-                f"<b>Plain English:</b> {flag.get('plain_english', 'N/A')}", body_style
+                f"<b>Plain English:</b> {_e(flag.get('plain_english', 'N/A'))}", body_style
             ))
             
             # Concerns
             concerns = flag.get('concerns', [])
             if concerns:
-                clause_elements.append(Paragraph("<b>⚠ Concerns:</b>", small_style))
+                clause_elements.append(Paragraph("<b>Concerns:</b>", small_style))
                 for concern in concerns:
-                    clause_elements.append(Paragraph(f"• {concern}", concern_style))
+                    clause_elements.append(Paragraph(f"- {_e(concern)}", concern_style))
             
             # Suggested Rewrite
             rewrite = flag.get('suggested_rewrite')
             if rewrite:
-                clause_elements.append(Paragraph("<b>✏️ Suggested Rewrite:</b>", small_style))
-                clause_elements.append(Paragraph(f'"{rewrite}"', rewrite_style))
+                clause_elements.append(Paragraph("<b>Suggested Rewrite:</b>", small_style))
+                clause_elements.append(Paragraph(f'"{_e(rewrite)}"', rewrite_style))
             
             # Negotiation Tip
             tip = flag.get('negotiation_tip')
             if tip:
-                clause_elements.append(Paragraph("<b>💡 Negotiation Tip:</b>", small_style))
-                clause_elements.append(Paragraph(f'"{tip}"', tip_style))
+                clause_elements.append(Paragraph("<b>Negotiation Tip:</b>", small_style))
+                clause_elements.append(Paragraph(f'"{_e(tip)}"', tip_style))
             
             # Raw text snippet
-            raw = flag.get('raw_text', '')[:200]
+            raw = (flag.get('evidence') or flag.get('raw_text', ''))[:300]
             if raw:
                 clause_elements.append(Spacer(1, 4))
                 clause_elements.append(Paragraph(
-                    f"<font color='#9ca3af'><i>Original text: \"{raw}...\"</i></font>", small_style
+                    f"<font color='#9ca3af'><i>Original text: \"{_e(raw)}\"</i></font>", small_style
                 ))
             
             clause_elements.append(Spacer(1, 6))
@@ -222,7 +231,7 @@ def build_pdf_report(risk_data: dict) -> bytes:
             
             elements.append(KeepTogether(clause_elements))
     else:
-        elements.append(Paragraph("🎉 No critical risks identified in this agreement.", body_style))
+        elements.append(Paragraph("No risky clauses were detected by the rules in this agreement. This does not mean the contract is safe.", body_style))
     
     # ---- FOOTER ----
     elements.append(Spacer(1, 30))
@@ -234,12 +243,7 @@ def build_pdf_report(risk_data: dict) -> bytes:
         fontSize=7, textColor=colors.HexColor('#9ca3af'),
         alignment=TA_CENTER
     )
-    elements.append(Paragraph(
-        "This report was generated by the Legal Document Analyzer AI system. "
-        "It is intended as a preliminary analysis tool and does not constitute legal advice. "
-        "Always consult a qualified attorney before making legal decisions.",
-        footer_style
-    ))
+    elements.append(Paragraph(_e(config.DISCLAIMER), footer_style))
     
     doc.build(elements)
     return buffer.getvalue()

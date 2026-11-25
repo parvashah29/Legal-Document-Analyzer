@@ -16,9 +16,10 @@ frontend/.env.*.local
 START_SYSTEM.md
 
 # Generated Local Test Documents (Contains mock datasets)
-test_documents/
-*.docx
+# (test_documents/*.docx are small fictional samples and ARE committed)
 *.pdf
+*.docx
+!test_documents/*.docx
 
 # Python - Runtime & Cache
 __pycache__/
@@ -78,3 +79,7 @@ flask_session/
 uploads/
 *.sqlite
 *.sqlite3
+
+# local vector data
+backend/data/
+data/

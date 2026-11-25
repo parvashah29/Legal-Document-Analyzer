@@ -1,209 +1,119 @@
-import os
-import json
+"""Retrieval-augmented Q&A over a single document."""
 import asyncio
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
-from qdrant_client.models import Filter, FieldCondition, MatchValue
-from ingestion import client, COLLECTION, EMBED_MODEL
+import json
+import logging
 
-# Load GROQ API configuration
-GROQ_KEY = os.getenv('GROQ_API_KEY', '').strip()
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-# Initialize LangChain Groq model if available
-if GROQ_KEY:
-    try:
-        from langchain_groq import ChatGroq
-        llm = ChatGroq(api_key=GROQ_KEY, model_name='llama-3.1-8b-instant', temperature=0.1)
-        print("[LLM] Initialized ChatGroq with Llama 3.1 8B model.")
-    except Exception as e:
-        print(f"[LLM] Error initializing ChatGroq: {e}. Falling back to Developer Mock LLM.")
-        llm = None
-else:
-    print("[LLM] GROQ_API_KEY not found in env. Initializing Developer Mock LLM mode.")
-    llm = None
+import llm
+import store
 
-# ==============================================================================
-# Multi-Turn Conversation Prompt (with history support)
-# ==============================================================================
-PROMPT = ChatPromptTemplate.from_messages([
-    ('system', '''You are a senior legal document analyst with expertise in contract review.
-Use ONLY the provided contract context to answer questions. Be precise and cite specific language.
-Flag risky, one-sided, or ambiguous language.
+log = logging.getLogger("legal.retrieval")
 
-Format your response as:
+SYSTEM = """You are a careful contract analyst. Answer using ONLY the numbered contract excerpts below.
+Cite the excerpts you rely on like [Excerpt 2]. If the excerpts do not contain the answer, say exactly:
+"This information is not present in the uploaded contract." Never invent terms, numbers or parties.
+You are not a lawyer; do not give legal advice.
+
+Format:
 ### Summary
-A concise overview of the answer.
+A concise answer.
 
 ### Key Points
-- Bullet point findings from the contract text.
+- Findings, each with an [Excerpt N] citation.
 
 ### Risks & Concerns
-- Any risks, red flags, or items the signer should watch for.
+- Risky, one-sided or ambiguous language relevant to the question (or "None identified in the retrieved excerpts.").
 
-If the answer is not in the provided contract context, explicitly state: "This information is not present in the uploaded contract."
+Contract excerpts:
+{context}"""
 
-Contract Context:
-{context}'''),
-    MessagesPlaceholder(variable_name="chat_history"),
-    ('human', '{question}')
-])
+NO_LLM_MARKER = "[NO-LLM MODE]"
 
-# ==============================================================================
-# In-Memory Conversation Store (keyed by doc_id)
-# ==============================================================================
-conversation_store: dict = {}
+conversation_store: dict[str, list] = {}
 
-def get_chat_history(doc_id: str) -> list:
-    """Retrieve conversation history for a document."""
-    return conversation_store.get(doc_id, [])
 
-def save_chat_turn(doc_id: str, question: str, answer: str):
-    """Persist a Q&A turn in conversation memory (max 10 turns)."""
-    if doc_id not in conversation_store:
-        conversation_store[doc_id] = []
-    conversation_store[doc_id].append(HumanMessage(content=question))
-    conversation_store[doc_id].append(AIMessage(content=answer))
-    # Keep only last 10 messages (5 turns) to avoid token overflow
-    if len(conversation_store[doc_id]) > 10:
-        conversation_store[doc_id] = conversation_store[doc_id][-10:]
-
-def clear_chat_history(doc_id: str):
-    """Clear conversation memory for a document."""
+def clear_chat_history(doc_id: str) -> None:
     conversation_store.pop(doc_id, None)
 
-def _build_history_messages(chat_history: list = None, doc_id: str = None) -> list:
-    """Build LangChain message objects from client-sent history or server store."""
-    if chat_history:
-        messages = []
-        for msg in chat_history[-10:]:  # Last 5 turns
-            if msg.get('role') == 'user':
-                messages.append(HumanMessage(content=msg['content']))
-            elif msg.get('role') == 'assistant':
-                messages.append(AIMessage(content=msg['content']))
-        return messages
-    elif doc_id:
-        return get_chat_history(doc_id)
-    return []
+
+def _history(chat_history, doc_id):
+    src = chat_history if chat_history else None
+    if src:
+        out = []
+        for m in src[-10:]:
+            if m["role"] == "user":
+                out.append(HumanMessage(content=m["content"]))
+            elif m["role"] == "assistant":
+                out.append(AIMessage(content=m["content"]))
+        return out
+    return list(conversation_store.get(doc_id, []))
 
 
-def generate_mock_rag_response(question: str, context_chunks: list) -> str:
-    """Generates a clean mock answer based on actual retrieved contract chunks."""
-    joined_chunks = "\n".join(f"- {c.strip()}" for c in context_chunks)
-    return f"""### Summary
-[DEVELOPER OFFLINE MODE] Local semantic search successfully retrieved {len(context_chunks)} matching clauses from your contract. This response is compiled by the local parser. To receive full Llama 3.5 generative analysis, please paste your `GROQ_API_KEY` into the backend `.env` file.
-
-### Key Points (Extracted Context)
-* **Direct Match Found:** The document contains semantic references to your query.
-* **Retrieved Snippets:**
-{joined_chunks}
-
-### Risks & Concerns
-* **Verification Recommended:** Please inspect the exact legal terminology in the **"Source Citations"** tab below.
-* **Key Terms Identified:** If this query relates to liability, indemnification, or termination, ensure standard caps are in place.
-"""
+def _save(doc_id, q, a):
+    h = conversation_store.setdefault(doc_id, [])
+    h += [HumanMessage(content=q), AIMessage(content=a)]
+    conversation_store[doc_id] = h[-10:]
 
 
-def _retrieve_chunks(doc_id: str, question: str, limit: int = 5):
-    """Encode question and retrieve top-k vector chunks from Qdrant."""
-    q_emb = list(EMBED_MODEL.embed([question]))[0]
-    
-    response = client.query_points(
-        collection_name=COLLECTION,
-        query=q_emb.tolist() if hasattr(q_emb, 'tolist') else list(q_emb),
-        limit=limit,
-        query_filter=Filter(
-            must=[
-                FieldCondition(key='doc_id', match=MatchValue(value=doc_id))
-            ]
-        )
+def _build_messages(question, sources, history):
+    context = "\n\n".join(f"[Excerpt {i + 1}] (chunk #{s['chunk_index'] + 1})\n{s['text']}" for i, s in enumerate(sources))
+    return [SystemMessage(content=SYSTEM.format(context=context)), *history, HumanMessage(content=question)]
+
+
+def no_llm_answer(sources: list[dict], reason: str) -> str:
+    bullets = "\n".join(f"- **Excerpt {i + 1} (chunk #{s['chunk_index'] + 1})**: {s['text'].strip()[:500]}" for i, s in enumerate(sources))
+    return (
+        f"### Summary\n{NO_LLM_MARKER} No language model is available ({reason}), so no written answer can be generated. "
+        f"Below are the {len(sources)} passages of your contract most relevant to the question, found by semantic search. "
+        "Start Ollama (`ollama serve`) or set GROQ_API_KEY to enable generated answers.\n\n"
+        f"### Key Points\n{bullets or '- No matching passages found.'}\n"
     )
-    results = response.points
-    
-    sources = []
-    context_texts = []
-    for r in results:
-        context_texts.append(r.payload['text'])
-        sources.append({
-            'text': r.payload['text'],
-            'chunk_index': r.payload['chunk_index'],
-            'score': round(r.score, 3)
-        })
-        
-    context = '\n\n---\n\n'.join(context_texts)
-    return context, context_texts, sources
 
 
-async def query_rag(doc_id: str, question: str, chat_history: list = None):
-    """Retrieves top 5 vector chunks for similarity, and builds the grounded answer with conversation memory."""
-    context, context_texts, sources = _retrieve_chunks(doc_id, question)
-    
-    # Build conversation history
-    history_messages = _build_history_messages(chat_history, doc_id)
-    
-    # Execute LLM chain or fall back to Mock
-    if llm is not None:
-        try:
-            chain = PROMPT | llm
-            response = await chain.ainvoke({
-                'context': context, 
-                'question': question,
-                'chat_history': history_messages
-            })
-            answer = response.content
-        except Exception as e:
-            print(f"[Retrieval] Error calling Groq LLM: {e}")
-            answer = generate_mock_rag_response(question, context_texts)
-    else:
-        answer = generate_mock_rag_response(question, context_texts)
-    
-    # Save to server-side conversation memory
-    save_chat_turn(doc_id, question, answer)
-        
-    return {
-        'answer': answer,
-        'sources': sources
-    }
+def _no_llm_reason() -> str:
+    st = llm.status()
+    return f"Groq: {st['groq'].get('reason', 'unavailable')}; Ollama: {st['ollama'].get('reason', 'unavailable')}"
 
 
-async def query_rag_stream(doc_id: str, question: str, chat_history: list = None):
-    """Async generator that yields SSE tokens for streaming chat responses."""
-    context, context_texts, sources = _retrieve_chunks(doc_id, question)
-    
-    # Build conversation history
-    history_messages = _build_history_messages(chat_history, doc_id)
-    
-    full_answer = ""
-    
-    if llm is not None:
-        try:
-            chain = PROMPT | llm
-            async for chunk in chain.astream({
-                'context': context,
-                'question': question,
-                'chat_history': history_messages
-            }):
-                token = chunk.content if hasattr(chunk, 'content') else str(chunk)
-                if token:
-                    full_answer += token
-                    yield json.dumps({"token": token, "done": False}) + "\n"
-        except Exception as e:
-            print(f"[Streaming] Error calling Groq LLM: {e}")
-            fallback = generate_mock_rag_response(question, context_texts)
-            full_answer = fallback
-            # Stream the mock response in chunks to simulate streaming
-            for i in range(0, len(fallback), 20):
-                yield json.dumps({"token": fallback[i:i+20], "done": False}) + "\n"
-                await asyncio.sleep(0.02)
-    else:
-        fallback = generate_mock_rag_response(question, context_texts)
-        full_answer = fallback
-        # Stream the mock response in small chunks
-        for i in range(0, len(fallback), 12):
-            yield json.dumps({"token": fallback[i:i+12], "done": False}) + "\n"
-            await asyncio.sleep(0.025)
-    
-    # Save to server-side conversation memory
-    save_chat_turn(doc_id, question, full_answer)
-    
-    # Final event with sources
-    yield json.dumps({"token": "", "done": True, "sources": sources}) + "\n"
+def retrieve(doc_id: str, question: str, limit: int = 5) -> list[dict]:
+    return store.search(doc_id, question, limit)
+
+
+async def query_rag(doc_id: str, question: str, chat_history=None) -> dict:
+    sources = await asyncio.to_thread(retrieve, doc_id, question)
+    if not sources:
+        return {"answer": "This information is not present in the uploaded contract.", "sources": [], "engine": "none"}
+    history = _history(chat_history, doc_id)
+    name, answer = await llm.ainvoke(_build_messages(question, sources, history))
+    if not name or not answer:
+        answer, name = no_llm_answer(sources, _no_llm_reason()), "none"
+    _save(doc_id, question, answer)
+    return {"answer": answer, "sources": sources, "engine": name}
+
+
+async def query_rag_stream(doc_id: str, question: str, chat_history=None):
+    """Yields newline-delimited JSON events: {token, done:false}... then {done:true, sources, engine}."""
+    try:
+        sources = await asyncio.to_thread(retrieve, doc_id, question)
+    except Exception as e:  # noqa: BLE001
+        log.exception("retrieval failed")
+        yield json.dumps({"token": "", "done": True, "error": f"Search failed: {type(e).__name__}", "sources": []}) + "\n"
+        return
+    if not sources:
+        msg = "This information is not present in the uploaded contract."
+        yield json.dumps({"token": msg, "done": False}) + "\n"
+        yield json.dumps({"token": "", "done": True, "sources": [], "engine": "none"}) + "\n"
+        return
+    history = _history(chat_history, doc_id)
+    full, engine = "", "none"
+    async for name, tok in llm.astream(_build_messages(question, sources, history)):
+        engine = name
+        full += tok
+        yield json.dumps({"token": tok, "done": False}) + "\n"
+    if not full:
+        full = no_llm_answer(sources, _no_llm_reason())
+        for i in range(0, len(full), 40):
+            yield json.dumps({"token": full[i:i + 40], "done": False}) + "\n"
+    _save(doc_id, question, full)
+    yield json.dumps({"token": "", "done": True, "sources": sources, "engine": engine}) + "\n"

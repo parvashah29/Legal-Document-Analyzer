@@ -1,120 +1,106 @@
-import uuid
+"""Document parsing and chunking (PDF / DOCX / TXT). Everything is processed in memory;
+no uploaded file is ever written to disk."""
 import io
+import logging
 import os
-from pypdf import PdfReader
+import uuid
+
 from docx import Document as DocxDocument
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from fastembed import TextEmbedding
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from pypdf import PdfReader
 
-# ==============================================================================
-# Dual-Mode Qdrant Connection Initialization
-# ==============================================================================
-QDRANT_URL = os.getenv('QDRANT_URL', '').strip()
-QDRANT_KEY = os.getenv('QDRANT_API_KEY', '').strip()
+import config
+import store
 
-if QDRANT_URL and QDRANT_KEY:
-    print("[Qdrant] Connecting to Remote Qdrant Cloud...")
-    client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_KEY)
-else:
-    print("[Qdrant] Initializing Local In-Memory instance (Developer Mode)...")
-    # Using ":memory:" connects to a local fast in-memory Qdrant database
-    client = QdrantClient(":memory:")
+log = logging.getLogger("legal.ingest")
 
-COLLECTION = 'legal_docs'
 
-# Embeddings model loaded locally (BAAI/bge-small-en-v1.5 via fastembed ONNX)
-# This model has 384 dimensions and is highly optimized for semantic search.
-print("[Embeddings] Loading BAAI/bge-small-en-v1.5 fastembed model...")
-try:
-    EMBED_MODEL = TextEmbedding(model_name='BAAI/bge-small-en-v1.5')
-except Exception as e:
-    print(f"[Embeddings] Warning: Failed to load local fastembed TextEmbedding: {e}")
-    print("[Embeddings] Initializing fallback light mock embedder...")
-    class MockEmbedder:
-        def embed(self, text_or_list, **kwargs):
-            import numpy as np
-            if isinstance(text_or_list, str):
-                return [np.zeros(384)]
-            return [np.zeros(384) for _ in text_or_list]
-    EMBED_MODEL = MockEmbedder()
+class IngestionError(ValueError):
+    """User-facing problem with the uploaded document (maps to HTTP 4xx)."""
 
-def ensure_collection():
+
+def _ext(filename: str) -> str:
+    return os.path.splitext(filename or "")[1].lower()
+
+
+def _pdf_text(contents: bytes) -> str:
+    if not contents.lstrip()[:5].startswith(b"%PDF"):
+        raise IngestionError("File content is not a valid PDF.")
     try:
-        existing = [c.name for c in client.get_collections().collections]
-        if COLLECTION not in existing:
-            print(f"[Qdrant] Creating collection: '{COLLECTION}' with 384 dimensions...")
-            client.create_collection(
-                collection_name=COLLECTION,
-                vectors_config=VectorParams(size=384, distance=Distance.COSINE)
-            )
-        # Always attempt to create the payload index for doc_id to be safe
-        try:
-            client.create_payload_index(
-                collection_name=COLLECTION,
-                field_name="doc_id",
-                field_schema="keyword"
-            )
-        except Exception:
-            # Safe catch-all for when index already exists or is in process
-            pass
-    except Exception as e:
-        print(f"[Qdrant] Error checking/creating collection: {e}")
-
-def extract_text(contents: bytes, filename: str) -> str:
-    """Parses raw document bytes and returns clean extracted text paragraphs."""
-    if filename.lower().endswith('.pdf'):
         reader = PdfReader(io.BytesIO(contents))
-        paragraphs = []
-        for p in reader.pages:
-            txt = p.extract_text()
-            if txt:
-                paragraphs.append(txt)
-        return '\n\n'.join(paragraphs)
-    
-    elif filename.lower().endswith('.docx'):
+        if reader.is_encrypted:
+            try:
+                ok = reader.decrypt("")
+            except Exception:  # noqa: BLE001
+                ok = 0
+            if not ok:
+                raise IngestionError("The PDF is password-protected. Remove the password and re-upload.")
+        pages = [(p.extract_text() or "").strip() for p in reader.pages]
+    except IngestionError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise IngestionError(f"Could not read the PDF ({type(e).__name__}). It may be corrupt.") from e
+    text = "\n\n".join(p for p in pages if p)
+    if not text.strip():
+        raise IngestionError(
+            "No selectable text found in this PDF. It looks like a scanned image; OCR is not supported. "
+            "Upload a text-based PDF, DOCX or TXT instead."
+        )
+    return text
+
+
+def _docx_text(contents: bytes) -> str:
+    try:
         doc = DocxDocument(io.BytesIO(contents))
-        return '\n\n'.join(p.text for p in doc.paragraphs if p.text.strip())
-        
+    except Exception as e:  # noqa: BLE001
+        raise IngestionError("Could not read the DOCX file. It may be corrupt or not a Word document.") from e
+    parts = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:  # contracts often keep terms in tables
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells if c.text.strip()]
+            if cells:
+                parts.append(" | ".join(dict.fromkeys(cells)))
+    return "\n\n".join(parts)
+
+
+def _txt_text(contents: bytes) -> str:
+    for enc in ("utf-8-sig", "utf-16", "latin-1"):
+        try:
+            return contents.decode(enc)
+        except UnicodeError:
+            continue
     return ""
 
-async def ingest_document(contents: bytes, filename: str):
-    """Chunks the text, encodes chunks into vectors, and indexes them in Qdrant."""
-    ensure_collection()
-    
-    raw_text = extract_text(contents, filename)
-    if not raw_text.strip():
-        raise ValueError("Could not extract any readable text from the uploaded document.")
-        
-    # Text splitter designed for contract clause granular parsing
+
+def extract_text(contents: bytes, filename: str) -> str:
+    ext = _ext(filename)
+    if ext == ".pdf":
+        return _pdf_text(contents)
+    if ext == ".docx":
+        return _docx_text(contents)
+    if ext == ".txt":
+        return _txt_text(contents)
+    raise IngestionError("Unsupported file type. Upload a PDF, DOCX or TXT file.")
+
+
+def chunk_text(text: str) -> list[str]:
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=600,
-        chunk_overlap=80,
-        separators=['\n\n', '\n', '. ', ' ']
+        chunk_size=900, chunk_overlap=100, separators=["\n\n", "\n", ". ", " "]
     )
-    chunks = splitter.split_text(raw_text)
-    
+    return [c.strip() for c in splitter.split_text(text) if c.strip()]
+
+
+def ingest_document(contents: bytes, filename: str) -> tuple[str, int]:
+    """Parse, chunk, embed and index. Returns (doc_id, chunk_count)."""
+    if not contents:
+        raise IngestionError("The uploaded file is empty.")
+    if len(contents) > config.MAX_UPLOAD_BYTES:
+        raise IngestionError(f"File is larger than the {config.MAX_UPLOAD_MB} MB limit.")
+    text = extract_text(contents, filename)
+    if len(text.strip()) < 20:
+        raise IngestionError("The document contains too little text to analyze.")
+    chunks = chunk_text(text)
     doc_id = str(uuid.uuid4())
-    
-    # Calculate embeddings using optimized fastembed ONNX generator
-    embeddings = list(EMBED_MODEL.embed(chunks))
-    
-    points = []
-    for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-        points.append(
-            PointStruct(
-                id=str(uuid.uuid4()),
-                vector=emb.tolist() if hasattr(emb, 'tolist') else list(emb),
-                payload={
-                    'doc_id': doc_id,
-                    'text': chunk,
-                    'chunk_index': i,
-                    'filename': filename
-                }
-            )
-        )
-        
-    client.upsert(collection_name=COLLECTION, points=points)
-    print(f"[Ingestion] Successfully ingested '{filename}' (ID: {doc_id}) into {len(chunks)} chunks.")
+    store.add_chunks(doc_id, filename, chunks)
+    log.info("Ingested %s as %s (%d chunks)", filename, doc_id, len(chunks))
     return doc_id, len(chunks)

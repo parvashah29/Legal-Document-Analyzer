@@ -1,42 +1,57 @@
+from typing import List, Optional
+
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+
 
 class ChatMessage(BaseModel):
     role: str = Field(..., description="'user' or 'assistant'")
-    content: str = Field(..., description="Message content")
+    content: str = Field(..., max_length=20000)
+
 
 class QueryRequest(BaseModel):
-    doc_id: str = Field(..., description="UUID of the ingested legal document")
-    question: str = Field(..., description="Question to ask about the contract")
-    chat_history: Optional[List[ChatMessage]] = Field(default=None, description="Previous conversation turns for multi-turn context")
+    doc_id: str = Field(..., description="UUID of the ingested document")
+    question: str = Field(..., min_length=1, max_length=2000)
+    chat_history: Optional[List[ChatMessage]] = None
+
 
 class SourceSnippet(BaseModel):
-    text: str = Field(..., description="Snippet of retrieved contract text")
-    chunk_index: int = Field(..., description="Index of the paragraph chunk")
-    score: float = Field(..., description="Semantic cosine similarity score")
+    text: str
+    chunk_index: int
+    score: float
+
 
 class QueryResponse(BaseModel):
-    answer: str = Field(..., description="AI generated legal explanation")
-    sources: List[SourceSnippet] = Field(default_list=[], description="Sourced context chunks")
+    answer: str
+    sources: List[SourceSnippet] = []
+    engine: str = "none"
+
 
 class RiskFlag(BaseModel):
-    clause_type: str = Field(..., description="Legal term (e.g. Indemnification, Liability)")
+    clause_type: str
     risk_level: str = Field(..., description="low | medium | high")
-    plain_english: str = Field(..., description="Simple summary of what the term does")
-    concerns: List[str] = Field(default_list=[], description="Action items or concerns for the signer")
-    chunk_index: int = Field(..., description="Document chunk index matching flag")
-    raw_text: str = Field(..., description="Direct snippet of raw contract language")
-    suggested_rewrite: Optional[str] = Field(default=None, description="A fairer, more balanced version of this clause")
-    negotiation_tip: Optional[str] = Field(default=None, description="One-liner the user can use in negotiation")
-    severity_score: Optional[int] = Field(default=None, description="Risk severity from 1 (minor) to 10 (critical)")
+    plain_english: str
+    concerns: List[str] = []
+    chunk_index: int
+    raw_text: str
+    evidence: Optional[str] = None
+    suggested_rewrite: Optional[str] = None
+    negotiation_tip: Optional[str] = None
+    severity_score: Optional[int] = Field(default=None, description="1 (minor) to 10 (critical)")
+    analysis_source: str = "rules"
+
 
 class RiskSummary(BaseModel):
-    high: int = Field(0, description="Number of High Risk flags")
-    medium: int = Field(0, description="Number of Medium Risk flags")
-    low: int = Field(0, description="Number of Low Risk flags")
-    overall_score: Optional[int] = Field(default=None, description="Weighted overall risk score 0-100")
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    overall_score: int = Field(0, description="0-100")
+    overall_label: str = "LOW"
+
 
 class RiskAnalysisResponse(BaseModel):
-    doc_id: str = Field(..., description="UUID of the document analyzed")
-    flags: List[RiskFlag] = Field(default_list=[], description="Identified clauses and assessments")
-    summary: RiskSummary = Field(..., description="Risk count metrics breakdown")
+    doc_id: str
+    filename: str = ""
+    flags: List[RiskFlag] = []
+    summary: RiskSummary
+    engine: str = "rules"
+    disclaimer: str = ""

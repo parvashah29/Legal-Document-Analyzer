@@ -3,7 +3,7 @@ import sys
 from docx import Document
 
 # Define the output directory for test documents
-OUTPUT_DIR = '/Users/parvashah/Desktop/DS Projects/Legal Document Analyzer/test_documents'
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'test_documents')
 
 # Standard boilerplate templates for building rich, legal documents programmatically
 CLAUSE_TEMPLATES = {
