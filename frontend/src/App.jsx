@@ -1,12 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import UploadZone from './components/UploadZone';
 import RiskDashboard from './components/RiskDashboard';
 import ChatPanel from './components/ChatPanel';
 import SourceViewer from './components/SourceViewer';
 import LandingPage from './components/LandingPage';
 import AuthPanel from './components/AuthPanel';
-import { getRisks } from './api';
-import { ShieldAlert, RefreshCw, FileCheck, Sun, Moon, Keyboard, Layout, User, History, LogOut, ChevronDown } from 'lucide-react';
+import { getRisks, getHealth } from './api';
+import { ShieldAlert, RefreshCw, FileCheck, Sun, Moon, Keyboard, Layout, History, LogOut, ChevronDown, AlertTriangle } from 'lucide-react';
 
 export default function App() {
   const [docId, setDocId] = useState(null);
@@ -15,16 +15,31 @@ export default function App() {
   const [sources, setSources] = useState([]);
   const [activeChunkIndex, setActiveChunkIndex] = useState(null);
   const [isLoadingRisks, setIsLoadingRisks] = useState(false);
+  const [risksError, setRisksError] = useState('');
+  const [isRefining, setIsRefining] = useState(false);
+  const [health, setHealth] = useState(null);
+  const [healthError, setHealthError] = useState(false);
   const [view, setView] = useState('landing'); // 'landing' or 'app'
   const [theme, setTheme] = useState(() => {
     return localStorage.getItem('lda-theme') || 'dark';
   });
 
   // Authentication State
-  const [user, setUser] = useState(null); // null = not logged in, 'guest' = skipped login, object = logged in user
+  const readJson = (key, fallback) => {
+    try {
+      const v = localStorage.getItem(key);
+      return v ? JSON.parse(v) : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const [user, setUser] = useState(() => readJson('lda-session', null)); // null = not logged in, 'guest' = skipped login, object = logged in user
   const [showAuth, setShowAuth] = useState(false);
   const [showHistoryDropdown, setShowHistoryDropdown] = useState(false);
-  const [userHistory, setUserHistory] = useState([]);
+  const [userHistory, setUserHistory] = useState(() => {
+    const u = readJson('lda-session', null);
+    return u?.email ? readJson(`lda-history-${u.email}`, []) : [];
+  });
 
   // Apply theme on mount and change
   useEffect(() => {
@@ -32,39 +47,23 @@ export default function App() {
     localStorage.setItem('lda-theme', theme);
   }, [theme]);
 
-  // Load user session on mount
+  // Show which backends (vector store / LLM) the server is actually using
   useEffect(() => {
-    const savedSession = localStorage.getItem('lda-session');
-    if (savedSession) {
-      const parsedUser = JSON.parse(savedSession);
-      setUser(parsedUser);
-      loadUserHistory(parsedUser.email);
-    }
+    let cancelled = false;
+    const load = () =>
+      getHealth()
+        .then((h) => { if (!cancelled) { setHealth(h); setHealthError(false); } })
+        .catch(() => { if (!cancelled) setHealthError(true); });
+    load();
+    const t = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(t); };
   }, []);
 
-  // Global keyboard shortcuts
-  useEffect(() => {
-    const handler = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'u') {
-        e.preventDefault();
-        if (docId) {
-          handleReset();
-        }
-      }
-      if (e.key === 'Escape') {
-        document.activeElement?.blur();
-        setShowHistoryDropdown(false);
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [docId]);
-
   const loadUserHistory = (email) => {
-    const historyData = localStorage.getItem(`lda-history-${email}`);
-    if (historyData) {
-      setUserHistory(JSON.parse(historyData));
-    } else {
+    try {
+      const historyData = localStorage.getItem(`lda-history-${email}`);
+      setUserHistory(historyData ? JSON.parse(historyData) : []);
+    } catch {
       setUserHistory([]);
     }
   };
@@ -107,61 +106,51 @@ export default function App() {
     localStorage.setItem(`lda-history-${user.email}`, JSON.stringify(updatedHistory));
   };
 
-  const loadHistoricalAudit = async (audit) => {
-    setShowHistoryDropdown(false);
-    setView('app');
-    setDocId(audit.docId);
-    setFileName(audit.fileName);
+  // Fast rule-based analysis first, then (if an LLM is running) a second pass that rewrites the wording.
+  const runAnalysis = async (id, name, { saveHistory = false } = {}) => {
+    setDocId(id);
+    setFileName(name);
     setIsLoadingRisks(true);
+    setRisksError('');
     setRisks(null);
     setSources([]);
 
     try {
-      const data = await getRisks(audit.docId);
-      setRisks(data);
-
-      if (data.flags && data.flags.length > 0) {
-        const baselineSources = data.flags.map((f) => ({
-          text: f.raw_text,
-          chunk_index: f.chunk_index,
-          score: 1.0,
-        }));
-        setSources(baselineSources);
-      }
-    } catch (err) {
-      console.error('Failed to load historical risk analysis', err);
-    } finally {
-      setIsLoadingRisks(false);
-    }
-  };
-
-  const handleIngested = async (id, name) => {
-    setDocId(id);
-    setFileName(name);
-    setIsLoadingRisks(true);
-
-    try {
       const data = await getRisks(id);
       setRisks(data);
-
-      if (user && user !== 'guest') {
-         saveAuditToHistory(id, name, data.summary?.overall_score || 0);
-      }
-
+      if (saveHistory) saveAuditToHistory(id, name, data.summary?.overall_score || 0);
       if (data.flags && data.flags.length > 0) {
-        const baselineSources = data.flags.map((f) => ({
-          text: f.raw_text,
-          chunk_index: f.chunk_index,
-          score: 1.0,
-        }));
-        setSources(baselineSources);
+        setSources(data.flags.map((f) => ({ text: f.raw_text, chunk_index: f.chunk_index, score: 1.0 })));
+      }
+      setIsLoadingRisks(false);
+      if (health?.llm?.active && health.llm.active !== 'none' && data.flags?.length) {
+        setIsRefining(true);
+        try {
+          setRisks(await getRisks(id, true));
+        } catch (err) {
+          console.warn('LLM refinement skipped', err);
+        } finally {
+          setIsRefining(false);
+        }
       }
     } catch (err) {
       console.error('Failed to load risk analysis', err);
+      setRisksError(
+        err.response?.data?.detail ||
+          (err.response ? 'The risk analysis failed.' : 'Cannot reach the backend. Is it running?')
+      );
     } finally {
       setIsLoadingRisks(false);
     }
   };
+
+  const loadHistoricalAudit = (audit) => {
+    setShowHistoryDropdown(false);
+    setView('app');
+    return runAnalysis(audit.docId, audit.fileName);
+  };
+
+  const handleIngested = (id, name) => runAnalysis(id, name, { saveHistory: !!user && user !== 'guest' });
 
   const handleReset = () => {
     setDocId(null);
@@ -169,7 +158,27 @@ export default function App() {
     setRisks(null);
     setSources([]);
     setActiveChunkIndex(null);
+    setRisksError('');
+    setIsRefining(false);
   };
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'u') {
+        e.preventDefault();
+        if (docId) {
+          handleReset();
+        }
+      }
+      if (e.key === 'Escape') {
+        document.activeElement?.blur();
+        setShowHistoryDropdown(false);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [docId]);
 
   const handleSelectChunk = (idx) => {
     setActiveChunkIndex(idx);
@@ -206,7 +215,7 @@ export default function App() {
           </div>
           <div>
             <h1 style={{ fontSize: '1.6rem' }}>Legal Agreement Diagnostics</h1>
-            <p>RAG Legal Assistant & Automated red-flag risk classifier</p>
+            <p>Contract red-flag scanner & grounded Q&A (not legal advice)</p>
           </div>
         </div>
 
@@ -284,10 +293,10 @@ export default function App() {
                             <div className="history-item-meta">
                               <span>{new Date(audit.date).toLocaleDateString()}</span>
                               <span style={{ 
-                                color: audit.score > 6 ? 'var(--high-risk)' : audit.score > 3 ? 'var(--med-risk)' : 'var(--low-risk)',
+                                color: audit.score >= 50 ? 'var(--high-risk)' : audit.score >= 25 ? 'var(--med-risk)' : 'var(--low-risk)',
                                 fontWeight: 600 
                               }}>
-                                Score: {audit.score}
+                                Score: {audit.score}/100
                               </span>
                             </div>
                           </div>
@@ -329,6 +338,24 @@ export default function App() {
         </div>
       </header>
 
+      <div className="status-strip" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)', padding: '0.5rem 0.25rem' }}>
+        <span title={health ? JSON.stringify({ vector_store: health.vector_store, llm: health.llm }, null, 1) : ''}>
+          {healthError ? (
+            <strong style={{ color: 'var(--high-risk)' }}>Backend unreachable</strong>
+          ) : health ? (
+            <>
+              Vector store: <strong>{health.vector_store.backend}</strong> | Language model:{' '}
+              <strong>
+                {health.llm.active === 'none' ? 'none (rule-based analysis; Q&A shows excerpts only)' : `${health.llm.active}${health.llm[health.llm.active]?.model ? ` (${health.llm[health.llm.active].model})` : ''}`}
+              </strong>
+            </>
+          ) : 'Connecting to backend...'}
+        </span>
+        <span style={{ display: 'inline-flex', gap: '0.35rem', alignItems: 'center' }}>
+          <AlertTriangle size={12} /> Automated analysis, not legal advice. Consult a qualified attorney.
+        </span>
+      </div>
+
       {/* Main Workflow View */}
       {view === 'landing' ? (
         <LandingPage onEnterHub={handleGetStartedClick} docId={docId} fileName={fileName} />
@@ -348,11 +375,11 @@ export default function App() {
                     Analyzing legal text clauses...
                   </p>
                   <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', opacity: 0.6 }}>
-                    Scanning for risks, generating rewrites & tips
+                    Scanning clauses with the rule engine
                   </p>
                 </div>
               ) : (
-                <RiskDashboard risks={risks} onSelectChunk={handleSelectChunk} />
+                <RiskDashboard risks={risks} error={risksError} isRefining={isRefining} onSelectChunk={handleSelectChunk} />
               )}
             </div>
 
@@ -379,7 +406,7 @@ export default function App() {
 
       <footer>
         <div className="footer-content">
-          <p>© 2026 Legal Document Analyzer. Powered by FastAPI, React, & LangChain RAG.</p>
+          <p>© 2026 Legal Document Analyzer. Not legal advice.</p>
           <div className="footer-shortcuts">
             <Keyboard size={12} />
             <span>⌘K Chat</span>

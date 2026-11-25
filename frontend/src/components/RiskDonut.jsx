@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 /**
  * Animated SVG donut chart showing risk distribution (High/Medium/Low).
@@ -79,7 +79,7 @@ export default function RiskDonut({ summary, onSegmentHover }) {
         <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="22" />
 
         {/* Segment arcs */}
-        {arcs.map((arc, i) => (
+        {arcs.map((arc) => (
           <circle
             key={arc.key}
             cx={cx}

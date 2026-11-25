@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
-  AlertOctagon, AlertTriangle, ShieldCheck, HelpCircle,
+  AlertTriangle, HelpCircle,
   Download, ChevronDown, ChevronUp, Copy, Check,
   FileEdit, MessageCircle, Gauge
 } from 'lucide-react';
@@ -8,12 +8,22 @@ import { downloadReport } from '../api';
 import RiskGauge from './RiskGauge';
 import RiskDonut from './RiskDonut';
 
-export default function RiskDashboard({ risks, onSelectChunk }) {
+export default function RiskDashboard({ risks, error, isRefining, onSelectChunk }) {
   const [expandedCard, setExpandedCard] = useState(null);
   const [activeTab, setActiveTab] = useState({});
   const [copiedIndex, setCopiedIndex] = useState(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [highlightedRisk, setHighlightedRisk] = useState(null);
+  const [downloadError, setDownloadError] = useState('');
+
+  if (!risks && error) {
+    return (
+      <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--high-risk)' }}>
+        <AlertTriangle size={40} style={{ marginBottom: '1rem' }} />
+        <p>{error}</p>
+      </div>
+    );
+  }
 
   if (!risks) {
     return (
@@ -28,10 +38,12 @@ export default function RiskDashboard({ risks, onSelectChunk }) {
 
   const handleDownloadReport = async () => {
     setIsDownloading(true);
+    setDownloadError('');
     try {
       await downloadReport(doc_id);
     } catch (err) {
       console.error('Failed to download report:', err);
+      setDownloadError('Could not generate the PDF report.');
     } finally {
       setIsDownloading(false);
     }
@@ -66,7 +78,10 @@ export default function RiskDashboard({ risks, onSelectChunk }) {
             Contract Risk Diagnostics
           </h2>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-            AI-powered scan with clause rewriting & negotiation strategies.
+            {risks.engine === 'rules'
+              ? 'Rule-based clause scan (no language model was used for the wording).'
+              : `Rule-based detection with wording by ${risks.engine.replace('rules+llm:', '')}.`}
+            {isRefining && ' Refining explanations with the language model...'}
           </p>
         </div>
         <button
@@ -84,11 +99,13 @@ export default function RiskDashboard({ risks, onSelectChunk }) {
         </button>
       </div>
 
+      {downloadError && <p style={{ color: 'var(--high-risk)', fontSize: '0.8rem' }}>{downloadError}</p>}
+
       {/* Visual Analytics Row — Gauge + Donut */}
       <div className="analytics-row">
         <div className="analytics-card">
           <RiskGauge score={summary.overall_score || 0} />
-          <p className="analytics-label">Overall Risk Score</p>
+          <p className="analytics-label">Overall Risk Score{summary.overall_label ? ` (${summary.overall_label})` : ''}</p>
         </div>
         <div className="analytics-card">
           <RiskDonut
@@ -235,7 +252,7 @@ export default function RiskDashboard({ risks, onSelectChunk }) {
               fontSize: '0.9rem',
             }}
           >
-            🎉 No critical risks identified in this agreement.
+            No risky clauses matched the rule set. This does not mean the contract is safe; read it fully or ask a lawyer.
           </div>
         )}
       </div>

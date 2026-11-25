@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 /**
  * Animated SVG semicircle gauge displaying overall contract risk score (0-100).
@@ -57,7 +57,7 @@ export default function RiskGauge({ score = 0 }) {
   };
 
   const color = getColor(animatedScore);
-  const label = animatedScore < 30 ? 'LOW RISK' : animatedScore < 60 ? 'MODERATE' : animatedScore < 80 ? 'HIGH RISK' : 'CRITICAL';
+  const label = animatedScore < 25 ? 'LOW RISK' : animatedScore < 50 ? 'MODERATE' : animatedScore < 75 ? 'HIGH RISK' : 'CRITICAL';
 
   // Needle endpoint
   const needleX = cx + (r - 10) * Math.cos(scoreAngle);

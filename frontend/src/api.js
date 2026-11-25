@@ -65,7 +65,9 @@ export const queryDocStream = async (docId, question, onToken, onComplete, chatH
   });
 
   if (!response.ok) {
-    throw new Error(`Stream request failed: ${response.status}`);
+    let detail = '';
+    try { detail = (await response.json()).detail; } catch { /* ignore */ }
+    throw new Error(detail || `Stream request failed: ${response.status}`);
   }
 
   const reader = response.body.getReader();
@@ -86,19 +88,28 @@ export const queryDocStream = async (docId, question, onToken, onComplete, chatH
       try {
         const data = JSON.parse(trimmed);
         if (data.done) {
-          onComplete && onComplete({ sources: data.sources || [] });
+          onComplete && onComplete({ sources: data.sources || [], engine: data.engine, error: data.error });
         } else if (data.token) {
           onToken && onToken(data.token);
         }
-      } catch (e) {
+      } catch {
         // Skip malformed lines
       }
     }
   }
 };
 
-export const getRisks = async (docId) => {
-  const response = await client.get(`/risks/${docId}`);
+export const getHealth = async () => {
+  const response = await client.get('/health', { timeout: 8000 });
+  return response.data;
+};
+
+// enrich=true asks the backend to have an LLM rewrite the explanations (slower, optional).
+export const getRisks = async (docId, enrich = false) => {
+  const response = await client.get(`/risks/${docId}`, {
+    params: enrich ? { enrich: true } : undefined,
+    timeout: enrich ? 300000 : 60000,
+  });
   return response.data;
 };
 

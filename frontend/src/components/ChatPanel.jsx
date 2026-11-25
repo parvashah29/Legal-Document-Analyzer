@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, MessageSquare, Trash2, Sparkles, Zap, CheckCircle2, ShieldAlert, AlertTriangle, Bookmark, BookOpen, AlertCircle, Search } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { Send, Bot, User, Trash2, Sparkles, Zap, CheckCircle2, ShieldAlert, Bookmark, BookOpen, Search } from 'lucide-react';
 import { queryDocStream, clearChat } from '../api';
 
 const SUGGESTED_QUESTIONS = [
@@ -67,6 +67,7 @@ export default function ChatPanel({ docId, onSourcesFetched }) {
         },
         (result) => {
           // Stream complete — commit the message
+          if (!fullResponse && result.error) fullResponse = result.error;
           setMessages((prev) => [
             ...prev,
             { sender: 'ai', text: fullResponse },
@@ -104,7 +105,7 @@ export default function ChatPanel({ docId, onSourcesFetched }) {
   const handleClearChat = async () => {
     try {
       await clearChat(docId);
-    } catch (_) {
+    } catch {
       // Server clear is best-effort
     }
     setChatHistory([]);
@@ -200,15 +201,15 @@ export default function ChatPanel({ docId, onSourcesFetched }) {
         if (!trimmed) return;
         
         // 1. Check for Developer Offline Mode notice banner
-        if (trimmed.includes('[DEVELOPER OFFLINE MODE]')) {
+        if (trimmed.includes('[NO-LLM MODE]')) {
           renderedElements.push(
             <div key={`offline-${idx}`} className="offline-warning-banner" style={{ background: 'linear-gradient(135deg, rgba(79, 70, 229, 0.1) 0%, rgba(168, 85, 247, 0.05) 100%)', borderColor: 'var(--border-glow)' }}>
               <div className="offline-warning-header" style={{ color: 'var(--accent)' }}>
                 <Search size={14} className="offline-warning-icon" />
-                <span>🔍 Local Semantic Search Engine</span>
+                <span>No language model running: showing matching excerpts</span>
               </div>
               <p className="offline-warning-text" style={{ color: 'var(--text-muted)' }}>
-                Your query was successfully routed through the localized vector index. Exact contractual clauses matching your intent have been identified and retrieved for review.
+                Start Ollama or set a GROQ_API_KEY on the backend to get written answers. The passages below are the most relevant parts of your contract.
               </p>
             </div>
           );
@@ -219,7 +220,7 @@ export default function ChatPanel({ docId, onSourcesFetched }) {
         let rawText = trimmed;
         let isBullet = false;
         if (trimmed.startsWith('*') || trimmed.startsWith('-')) {
-          rawText = trimmed.replace(/^[\*\-]\s*/, '').trim();
+          rawText = trimmed.replace(/^[*-]\s*/, '').trim();
           isBullet = true;
         }
         

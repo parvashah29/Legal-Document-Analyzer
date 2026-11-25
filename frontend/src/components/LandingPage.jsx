@@ -1,4 +1,3 @@
-import React from 'react';
 import {
   ShieldAlert,
   MessageSquare,
@@ -10,7 +9,6 @@ import {
   Upload,
   Cpu,
   Bookmark,
-  CheckCircle,
   FileCheck
 } from 'lucide-react';
 
@@ -19,32 +17,32 @@ export default function LandingPage({ onEnterHub, docId, fileName }) {
     {
       icon: <ShieldAlert size={28} className="feature-icon-alert" />,
       title: "Semantic Risk Classifier",
-      description: "Automated diagnostics scanned across 10 distinct contract clause types, grading severity into High, Medium, and Low levels."
+      description: "A rule engine scans for 19 clause types (unlimited liability, auto-renewal, one-sided termination, non-compete, indemnity and more) and grades severity into High, Medium and Low."
     },
     {
       icon: <MessageSquare size={28} className="feature-icon-chat" />,
       title: "RAG Conversational AI",
-      description: "Ask detailed questions and debate definitions using Llama-3.1-8B-Instant with streaming SSE support and multi-turn memory."
+      description: "Ask questions answered only from your contract's retrieved excerpts, with streaming and multi-turn memory. Uses Groq or a local Ollama model when available."
     },
     {
       icon: <FileEdit size={28} className="feature-icon-edit" />,
       title: "Pro-Drafting & Rewrites",
-      description: "Get context-specific alternative drafting suggestions, inline rewrites, and senior-level negotiation tips to protect your interest."
+      description: "Get alternative wording and negotiation talking points for each flagged clause. Templates by default; a language model tailors them when available."
     },
     {
       icon: <BarChart3 size={28} className="feature-icon-chart" />,
       title: "Rich Analytics Dashboard",
-      description: "Experience modern semi-circle SVG risk gauges and interactive donut segment charts with automatic cross-filtering capabilities."
+      description: "An overall 0-100 risk score gauge and a clickable distribution chart that filters the clause list."
     },
     {
       icon: <Download size={28} className="feature-icon-download" />,
       title: "Custom PDF Executive Reports",
-      description: "Generate professionally branded PDF summaries in one click, including flagged clause registers, risk tables, and executive summaries."
+      description: "Download a PDF with the risk summary, every flagged clause, suggested rewrites and a legal disclaimer."
     },
     {
       icon: <Zap size={28} className="feature-icon-offline" />,
-      title: "Auth Hub & Local History",
-      description: "Secure glassmorphism authentication gateway. Save your parsed contracts and risk analysis history persistently in local browser storage."
+      title: "Local History",
+      description: "Optionally keep a list of past analyses in this browser. No account, no server login."
     }
   ];
 
@@ -52,12 +50,12 @@ export default function LandingPage({ onEnterHub, docId, fileName }) {
     {
       icon: <Upload size={22} />,
       title: "1. Drop Document",
-      desc: "Drop PDF/DOCX contract. The system securely segments, tokenizes, and indexes the text chunks."
+      desc: "Drop a PDF, DOCX or TXT contract. It is split into chunks and indexed locally."
     },
     {
       icon: <Cpu size={22} />,
       title: "2. Scan & Diagnose",
-      desc: "Automated vectors classify clause risks, generating executive summaries and context-specific drafting recommendations."
+      desc: "Rules flag risky clauses and score the contract; rewrites and tips are attached to each flag."
     },
     {
       icon: <ArrowRight size={22} />,
@@ -85,7 +83,7 @@ export default function LandingPage({ onEnterHub, docId, fileName }) {
         </h1>
 
         <p className="hero-subtitle animate-slide-up-delayed">
-          Upload any PDF or DOCX agreement to scan for 10 core risks, get professional drafting rewrites, download custom executive reports, and query an assistant with complete grounding and source citations.
+          Upload a PDF, DOCX or TXT agreement to scan for common risky clauses, get suggested rewrites, download a PDF report, and ask questions answered from the document with source excerpts. Not legal advice.
         </p>
 
         <div className="hero-actions animate-slide-up-delayed-more">

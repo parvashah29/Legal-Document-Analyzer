@@ -1,6 +1,6 @@
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Upload, FileText, AlertCircle, CheckCircle } from 'lucide-react';
+import { Upload, AlertCircle } from 'lucide-react';
 import { uploadDoc } from '../api';
 
 export default function UploadZone({ onIngested }) {
@@ -28,7 +28,9 @@ export default function UploadZone({ onIngested }) {
         console.error(err);
         setError(
           err.response?.data?.detail ||
-            'Failed to upload and parse your contract. Please try again.'
+            (err.response
+              ? 'Failed to upload and parse your contract. Please try again.'
+              : 'Cannot reach the backend. Is it running on the configured API URL?')
         );
         setIsUploading(false);
       }
@@ -39,7 +41,19 @@ export default function UploadZone({ onIngested }) {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     maxFiles: 1,
+    maxSize: 10 * 1024 * 1024,
+    onDropRejected: (rejections) => {
+      const code = rejections[0]?.errors?.[0]?.code;
+      setError(
+        code === 'file-too-large'
+          ? 'File is larger than 10 MB.'
+          : code === 'file-invalid-type'
+            ? 'Unsupported file type. Upload a PDF, DOCX or TXT file.'
+            : 'That file could not be accepted.'
+      );
+    },
     accept: {
+      'text/plain': ['.txt'],
       'application/pdf': ['.pdf'],
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document': [
         '.docx',
@@ -89,7 +103,7 @@ export default function UploadZone({ onIngested }) {
               Drag & Drop Your Contract
             </h3>
             <p style={{ color: 'var(--text-muted)', margin: '0.5rem 0' }}>
-              Supports PDF and DOCX files up to 10MB
+              Supports PDF, DOCX and TXT files up to 10 MB (text-based; scanned images are not supported)
             </p>
             <span
               style={{

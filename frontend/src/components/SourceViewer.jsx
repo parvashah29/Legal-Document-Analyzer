@@ -1,4 +1,3 @@
-import React from 'react';
 import { Bookmark, Percent } from 'lucide-react';
 
 export default function SourceViewer({ sources, activeChunkIndex }) {
