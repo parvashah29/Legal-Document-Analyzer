@@ -1,19 +1,19 @@
+# Backend only (Docker). Build context is backend/. Without Ollama or a Groq key the
+# deployed service runs rule-based analysis only; vector data on the free plan is ephemeral.
 services:
   - type: web
-    name: legal-agreement-diagnostics-backend
+    name: legal-document-analyzer-api
     env: docker
     dockerfilePath: backend/Dockerfile
     dockerContext: backend
     plan: free
+    healthCheckPath: /health
     envVars:
-      - key: PORT
-        value: 8000
+      - key: CORS_ORIGINS
+        sync: false   # e.g. https://your-frontend.example.com
       - key: GROQ_API_KEY
-        sync: false
-        placeholder: "Enter your Groq API Key (gsk_...)"
+        sync: false   # optional
       - key: QDRANT_URL
-        sync: false
-        placeholder: "Enter your Qdrant Cluster URL (https://...)"
+        sync: false   # optional (falls back to local on-disk Qdrant)
       - key: QDRANT_API_KEY
-        sync: false
-        placeholder: "Enter your Qdrant API Key"
+        sync: false   # optional

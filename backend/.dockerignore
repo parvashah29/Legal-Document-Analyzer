@@ -11,3 +11,6 @@ __pycache__/
 .gitignore
 .dockerignore
 Dockerfile
+data
+tests
+__pycache__

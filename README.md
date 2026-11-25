@@ -1,150 +1,76 @@
- # 🛡️ Legal Agreement Diagnostics & RAG Assistant
+# Legal Document Analyzer
 
-[![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi)](https://fastapi.tiangolo.com)
-[![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev)
-[![Qdrant](https://img.shields.io/badge/Qdrant-Active-red?style=for-the-badge&logo=qdrant&logoColor=white)](https://qdrant.tech)
-[![Groq](https://img.shields.io/badge/LLM-Llama3_via_Groq-blueviolet?style=for-the-badge)](https://groq.com)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
+Upload a contract (PDF, DOCX or TXT), get a risk scan of its clauses, ask questions answered from the document with source excerpts, and download a PDF report. Runs fully locally; cloud accounts are optional.
 
-An AI-powered **Legal Contract Analyst** built for small businesses, freelancers, and legal offices to demystify complex contracts (NDAs, leases, MSAs). Features interactive semantic querying and automated clause-by-clause risk profiling using a RAG pipeline.
+> **Not legal advice.** Output is automated, preliminary and can be wrong or incomplete. It does not create an attorney-client relationship. Have a qualified attorney review any contract before you sign it.
 
----
+## What it does (and how)
 
-## ✨ Core Features
+| Feature | How it works |
+| --- | --- |
+| Ingestion | PDF (`pypdf`), DOCX (`python-docx`, including tables) and TXT, up to 10 MB, parsed in memory (no uploaded file is written to disk). Scanned/image-only PDFs and password-protected PDFs are rejected with a clear message (no OCR). |
+| Chunking + vectors | ~900-character chunks, embedded locally with `fastembed` (`BAAI/bge-small-en-v1.5`), stored in Qdrant. |
+| Risk scan | A deterministic rule engine (`backend/rules.py`, 19 clause types) flags e.g. unlimited liability, nominal liability caps, auto-renewal, one-sided termination, non-compete (escalated for long/worldwide), unilateral indemnity, IP assignment, arbitration, rights waivers, unilateral changes, late fees. Severity 1-10 per flag, overall 0-100 score and label. |
+| LLM enrichment | If a language model is available, it rewrites the plain-English explanation, concerns, suggested rewrite and negotiation tip per flag. Detection and severity always come from the rules, so results are auditable. |
+| Q&A | Top-5 retrieval **restricted to the one document** you ask about, then an LLM answers using only those numbered excerpts (`[Excerpt N]`) with streaming and multi-turn memory. With no LLM you get the retrieved excerpts and a clear notice instead of an answer. |
+| PDF report | `/report/{doc_id}`: summary, every flagged clause, rewrites and the disclaimer. |
 
-*   **📄 Dual-Format Ingestion:** Seamlessly upload and parse `.pdf` (via `pypdf`) and `.docx` (via `python-docx`) agreements directly in-memory (no raw files are stored on server disks).
-*   **🔴 Automated Risk Diagnostics:** Scans contracts and automatically scores terms into **High**, **Medium**, and **Low** risk categories.
-*   **🔍 Interactive Citation Jumping:** Clicking any risk-scored card in the dashboard automatically highlights and scrolls to the exact matching clause in the **Reference Citations** viewer below.
-*   **🤖 Grounded RAG Chat Panel:** Dialogue with a dedicated legal AI agent whose prompts enforce strict contextual grounding to prevent hallucinations.
-*   **⚡ Ultra-Fast Local Embeddings:** Vectors are processed locally using memory-efficient `fastembed` (`BAAI/bge-small-en-v1.5` 384-dimensional cosine similarity), completely eliminating PyTorch overhead.
-*   **☁️ Dual-Mode Connection:** 
-    *   *Production:* Hooks into remote **Qdrant Cloud** clusters and **Groq Llama 3.1 8B** models.
-    *   *Developer (Offline):* Fallback to local **in-memory Qdrant** and a **heuristic rule-engine** to run the complete interface offline without needing credentials.
-*   **🔒 Local Auth & History Tracking:** Glassmorphism authentication hub that stores persistent analysis records directly in your browser's local storage.
-*   **🌐 1-Click Cloud Deployment:** Comes pre-configured with a `render.yaml` blueprint and Dockerfile for effortless web hosting.
+Limits worth knowing: the rule engine only finds what its patterns cover (English, common phrasing); small local models (e.g. `llama3.2` 3B) sometimes misjudge or write weak explanations; there is no OCR; there are no user accounts (the "profile" in the UI is a list of past analyses kept in your browser's localStorage, no password).
 
----
+## Backends: what runs where
 
-## 🛠️ Technology Stack
+Chosen automatically at startup and shown in the UI header strip and at `GET /health`:
 
-| Component | Technology | Description |
-| :--- | :--- | :--- |
-| **Frontend** | `React` + `Vite` | Fast SPA rendering with HSL dark-mode aesthetics |
-| **Backend** | `FastAPI` + `Uvicorn` | Asynchronous Python REST endpoints |
-| **Vector DB** | `Qdrant` | Dual-mode similarity storage (Cloud / In-Memory) |
-| **Embeddings** | `FastEmbed` | Lightweight local `BAAI/bge-small-en-v1.5` encoding |
-| **Reasoning LLM** | `Llama 3.1 8B via Groq` | Fast, low-latency API inference with JSON Mode |
-| **RAG Orchestrator** | `LangChain` | Grounded system prompt chains |
+- **Vector store:** remote Qdrant only if `QDRANT_URL` and `QDRANT_API_KEY` are set and reachable; otherwise a **local on-disk Qdrant** in `backend/data/qdrant` (git-ignored, survives restarts).
+- **LLM (`LLM_PROVIDER=auto`):** Groq if `GROQ_API_KEY` works, else **Ollama** at `OLLAMA_HOST` if running with the `OLLAMA_MODEL` (default `llama3.2`) pulled, else none (rule-based analysis and excerpt-only Q&A).
 
----
+## Run locally
 
-## 📐 System Architecture & Data Flow
+Requires Python 3.12 and Node 20+. The first run downloads the embedding model (~130 MB) once.
 
-```mermaid
-graph TD
-    User([User's Browser]) -->|1. Uploads PDF/DOCX| API[FastAPI Backend - Port 8000]
-    API -->|2. Extracts Paragraphs| Ingestion[Ingestion Engine]
-    Ingestion -->|3. Segments Clauses| Splitter[RecursiveTextSplitter]
-    Splitter -->|4. Computes Vectors| Embedder[Local BGE-Small Model]
-    Embedder -->|5. Indexes 384-Dim Points| VectorStore[(Qdrant Vector DB)]
-    
-    User -->|6. Submits Q&A Prompt| API
-    API -->|7. Vectorizes Inquiry| Embedder
-    Embedder -->|8. Query Search| VectorStore
-    VectorStore -->|9. Top 5 Chunks| API
-    API -->|10. Context Injection| LLM[Groq Llama 3.1 LLM]
-    LLM -->|11. Grounded Answer| User
-```
-
----
-
-## 📂 Repository Structure
-
-```
-├── backend/
-│   ├── main.py               # API routes, CORS configs, startup logic
-│   ├── ingestion.py          # PDF/Word text parsing & local embeddings
-│   ├── retrieval.py          # Semantic similarity search & LLM prompt chaining
-│   ├── classifier.py         # Automated risk profiling & heuristic rule engine
-│   ├── models.py             # Pydantic schema declarations
-│   ├── generate_test_data.py # Script generating 25 mock contracts
-│   └── requirements.txt      # Python package list
-├── frontend/
-│   ├── src/
-│   │   ├── components/       # UploadZone, RiskDashboard, ChatPanel, SourceViewer
-│   │   ├── App.jsx           # Main routing & state manager
-│   │   ├── api.js            # Axios endpoint client with progress monitoring
-│   │   └── index.css         # Harmonious HSL styling & animations
-│   └── package.json          # React node package dependencies
-└── test_documents/           # Directory housing generated Word agreements
-```
-
----
-
-## 🚀 Quick Start & Setup
-
-### 1. Backend Setup
-
-First, navigate to the `backend/` directory:
 ```bash
+git clone https://github.com/parvashah29/Legal-Document-Analyzer.git
+cd Legal-Document-Analyzer
+
+# backend
 cd backend
-```
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
+cp .env.example .env            # optional; everything has a default
+./venv/bin/uvicorn main:app --port 8000
+# open http://localhost:8000/health and /docs
 
-Create your active environment configuration:
-```bash
-cp .env.example .env
-```
-Open `.env` and fill in your keys:
-```env
-PORT=8000
-GROQ_API_KEY=your_groq_api_key
-QDRANT_URL=https://xxxxxxxx.aws.cloud.qdrant.io:6333
-QDRANT_API_KEY=your_qdrant_api_key
-```
-*(If left blank, the system automatically falls back to offline Developer Mock Mode using local memory).*
-
-Install Python dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-Launch the FastAPI server:
-```bash
-python -m uvicorn main:app --reload --port 8000
-```
-
----
-
-### 2. Frontend Setup
-
-In a new terminal window, navigate to the `frontend/` directory:
-```bash
+# frontend (new terminal)
 cd frontend
-```
-
-Install React packages:
-```bash
 npm install
+npm run dev                     # http://localhost:5173
 ```
 
-Start the Vite development server:
+For generated explanations/answers without any cloud account: install [Ollama](https://ollama.com), `ollama pull llama3.2`, and make sure `ollama serve` is running. The UI shows which backend is active.
+
+### Configuration (`backend/.env`, see `.env.example`)
+
+`LLM_PROVIDER` (auto|groq|ollama|none), `GROQ_API_KEY`, `GROQ_MODEL`, `OLLAMA_HOST`, `OLLAMA_MODEL`, `QDRANT_URL`, `QDRANT_API_KEY`, `DATA_DIR`, `CORS_ORIGINS` (default: localhost:5173/4173 only), `MAX_UPLOAD_MB`. Frontend: `VITE_API_URL` (default `http://localhost:8000`). Never commit `.env`.
+
+## API
+
+`POST /upload` (multipart `file`) -> `{doc_id, chunks, filename}` | `GET /risks/{doc_id}[?enrich=true]` | `POST /query` and `POST /query/stream` (`{doc_id, question, chat_history?}`) | `GET /report/{doc_id}` (PDF) | `DELETE /documents/{doc_id}` | `POST /chat/clear/{doc_id}` | `GET /health`.
+
+Documents are isolated by `doc_id` (random UUID): every vector search is filtered to one document. There is no per-user authentication, so anyone who can reach the API and knows a `doc_id` can read that document. Do not expose it publicly as-is.
+
+## Tests
+
 ```bash
-npm run dev
+backend/venv/bin/pip install -r backend/requirements-dev.txt
+backend/venv/bin/python -m pytest -q      # offline; LLMs are mocked/disabled
 ```
 
-Open [http://localhost:5173/](http://localhost:5173/) in your web browser and enjoy the glowing diagnostics portal!
+Covers upload formats (TXT/DOCX/PDF), validation (type, size, scanned/corrupt PDFs), risky-clause detection, clean-contract scoring, retrieval isolation between documents, streaming contract, PDF report text, CORS and mocked-LLM paths. `test_documents/` holds 25 fictional sample contracts (regenerate with `backend/generate_test_data.py`).
 
----
+## Deploy
 
-## 🧪 Testing with Mock Agreements
+`render.yaml` deploys the backend as a Docker web service. Without Ollama or a Groq key it runs rule-based only, and free-plan disk is ephemeral. The frontend is a static Vite build (`npm run build`, set `VITE_API_URL`); add its origin to `CORS_ORIGINS`.
 
-To evaluate the system, we have generated **25 distinct agreements** featuring intentional legal risks (e.g. broad unilateral indemnity, worldwide 5-year non-competes, mandatory AAA arbitration).
+## Project layout
 
-1. Find the generated documents in your [test_documents/](file:///Users/parvashah/Desktop/DS%20Projects/Legal%20Document%20Analyzer/test_documents) folder.
-2. Drag and drop any agreement (e.g. `02_independent_contractor_agreement.docx`) into the upload drop-zone.
-3. Watch the automated scanner categorize clauses and click cards to scroll to citations immediately!
-
----
-
-## 📄 License
-This project is licensed under the MIT License - see the LICENSE file for details.
+`backend/` `main.py` (API), `config.py`, `store.py` (Qdrant + embeddings), `ingestion.py`, `rules.py`, `classifier.py`, `llm.py` (provider selection), `retrieval.py`, `report.py`, `models.py` | `frontend/` React 19 + Vite | `tests/` pytest suite.

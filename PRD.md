@@ -1,5 +1,7 @@
 # Product Requirements Document (PRD)
 
+> Historical planning document. It describes the original cloud-first design (Groq + Qdrant Cloud). The implemented behaviour is documented in README.md; where they differ, README.md is authoritative.
+
 ## Project: Legal Document Analyzer (Legal RAG)
 **Author:** AI Pair Partner  
 **Status:** Draft / Ready for Review  
